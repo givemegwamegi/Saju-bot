@@ -414,8 +414,21 @@ a { color: var(--blue); text-decoration: none; }
 .bubble ul { margin: 6px 0; padding-left: 17px; }
 .bubble li { margin: 2px 0; }
 .bubble .quote { color: #9fb6e0; }
-.msg-tools { display: flex; gap: 8px; margin-top: 6px; font-size: 11px; color: var(--muted2); }
-.msg-tools button { font-size: 11px; color: var(--muted2); }
+/* 내 말풍선도 삭제 줄을 달 수 있게 세로로 묶는다 */
+.msg.me > .me-col {
+  display: flex; flex-direction: column; align-items: flex-end;
+  min-width: 0; max-width: calc(100% - 8px);
+}
+.msg.me .bubble { max-width: 100%; }
+.msg-tools { display: flex; gap: 6px; margin-top: 5px; font-size: 11px; color: var(--muted2); align-items: center; }
+.msg-tools button {
+  font-size: 10.5px; line-height: 1.3; color: var(--muted2);
+  border: 1px solid rgba(140, 170, 230, .16); border-radius: 6px;
+  padding: 2px 6px; background: rgba(20, 32, 60, .35);
+}
+.msg-tools button:active { background: rgba(77, 140, 255, .18); }
+.msg-tools button.del { color: #c8a4aa; border-color: rgba(220, 130, 140, .2); }
+.msg-tools button.del:active { background: rgba(200, 70, 90, .22); }
 .msg-tag {
   display: inline-block; font-size: 10px; letter-spacing: .6px; color: var(--gold);
   border: 1px solid rgba(217, 184, 114, .3); border-radius: 5px;
@@ -727,25 +740,64 @@ select { -webkit-appearance: none; appearance: none; background-image: linear-gr
 
 
 /* ---------------- chat actions ---------------- */
+/* 버튼 4개가 한 줄에 들어간다. 좁으면 기록 표시(ctx)가 먼저 줄고,
+   그래도 넘치면 이 줄만 가로로 넘어가게 해서 페이지가 밀리지 않게 한다. */
 .chat-actions {
   flex: 0 0 auto;
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 14px 0;
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 12px 0;
   font-size: 11px; color: var(--muted2);
+  white-space: nowrap;
+  overflow-x: auto; overflow-y: hidden;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
 }
+.chat-actions::-webkit-scrollbar { display: none; }
 .chat-actions .ctx {
-  flex: 1; min-width: 0; color: #9cc0ff; font-size: 11px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  flex: 1 1 auto; min-width: 0; color: #9cc0ff; font-size: 11px;
+  display: flex; align-items: center; gap: 2px;
+  white-space: nowrap; overflow: hidden;
 }
+.chat-actions .ctx-p { display: flex; align-items: center; gap: 3px; min-width: 0; }
+.chat-actions .ctx-ic {
+  flex: 0 0 auto; font-family: 'Noto Serif KR', serif; font-size: 11px;
+  color: var(--gold); letter-spacing: 0; line-height: 1;
+}
+.chat-actions .ctx-txt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-actions .ctx #chatCount { flex: 0 0 auto; }
 .chat-actions .ctx button {
-  color: var(--gold); font-size: 11px; text-decoration: underline; margin-left: 5px;
+  flex: 0 0 auto; color: var(--gold); font-size: 10.5px; text-decoration: none;
+  margin-left: 2px; padding: 0 4px; line-height: 1.55;
+  border: 1px solid rgba(217, 184, 114, .32); border-radius: 5px;
+  background: rgba(217, 184, 114, .08);
 }
+.chat-actions .ctx button:active { background: rgba(217, 184, 114, .22); }
+.chat-actions .ctx-sep { flex: 0 0 auto; color: rgba(156, 176, 214, .45); margin: 0 2px; }
 .chat-actions > button {
-  flex: 0 0 auto; font-size: 11px; color: var(--muted);
-  border: 1px solid var(--line); border-radius: 7px; padding: 3px 8px;
+  flex: 0 0 auto; font-size: 11px; line-height: 1.35; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 7px; padding: 3px 7px;
   background: rgba(20, 32, 60, .5);
 }
 .chat-actions > button:active { background: rgba(77, 140, 255, .18); }
+.chat-actions > button.ca-clear {
+  min-width: 52px; color: #dda6ac;
+  border-color: rgba(220, 130, 140, .32);
+  background: rgba(96, 30, 42, .34);
+}
+.chat-actions > button.ca-clear.confirming {
+  color: #fff; border-color: rgba(255, 150, 160, .75);
+  background: rgba(196, 56, 76, .9);
+}
+/* 넓은 화면은 긴 이름, 좁은 화면은 짧은 이름 */
+.chat-actions .ca-s { display: none; }
+@media (max-width: 360px) {
+  .chat-actions { padding: 6px 10px 0; gap: 5px; }
+  .chat-actions > button { padding: 3px 6px; font-size: 10.5px; }
+  .chat-actions > button.ca-clear { min-width: 48px; }
+  /* 320px 폭에서도 기록 표시 자리를 남기려고 버튼 글자를 줄인다 */
+  .chat-actions .ca-l { display: none; }
+  .chat-actions .ca-s { display: inline; }
+}
 
 </style>
 </head>
@@ -778,11 +830,12 @@ select { -webkit-appearance: none; appearance: none; background-image: linear-gr
       <button class="qchip" data-q="자유 상담">자유 상담</button>
     </div></div>
     <div id="chatBanner"></div>
-    <div class="chat-actions">
+    <div class="chat-actions" id="chatActions">
       <span class="ctx" id="chatCtx"></span>
-      <button id="actCopy" type="button">전체 복사</button>
-      <button id="actMd" type="button">MD 저장</button>
-      <button id="actTxt" type="button">TXT 저장</button>
+      <button id="actCopy" type="button"><span class="ca-l">전체 복사</span><span class="ca-s">복사</span></button>
+      <button id="actMd" type="button"><span class="ca-l">MD 저장</span><span class="ca-s">MD</span></button>
+      <button id="actTxt" type="button"><span class="ca-l">TXT 저장</span><span class="ca-s">TXT</span></button>
+      <button id="actClear" class="ca-clear" type="button" aria-label="상담 기록 비우기">비우기</button>
     </div>
     <div class="msgs" id="msgs"></div>
     <div class="composer">
@@ -10783,6 +10836,7 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
     var box = $('msgs');
     var msgs = messagesOf();
     var html = '';
+    resetClearBtn();
     if (!msgs.length) {
       html += '<div class="webtoon webtoon-mini collapsed" id="chatToon">' +
         '<button class="webtoon-hd" type="button" data-toon="chatToon">' +
@@ -10791,7 +10845,7 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
       html += aiBubble('왔네. 사주는 다 봐 뒀어. 뭐 궁금한지 말해 봐.');
     } else {
       msgs.forEach(function (m, i) {
-        html += m.role === 'user' ? userBubble(m.content) : aiBubble(m.content, m.sample && !m.error, i);
+        html += m.role === 'user' ? userBubble(m.content, i) : aiBubble(m.content, m.sample && !m.error, i);
       });
     }
     if (state.streaming) html += aiBubble('<span class="typing"><i></i><i></i><i></i></span>' +
@@ -10807,11 +10861,19 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
     return '<div class="msg ai"><div class="msg-av"><img src="./assets/profile.jpg" alt="장영휘"></div><div>' +
       (isSample ? '<span class="msg-tag">샘플 미리보기</span>' : '') +
       '<div class="bubble" data-idx="' + (idx == null ? '' : idx) + '">' + (raw ? text : md(text)) + '</div>' +
-      (isSample ? '<div class="msg-tools"><button data-copy="' + (idx == null ? '' : idx) + '">복사</button></div>' : '') +
+      (idx == null || idx < 0 ? '' : msgTools(idx, 'ai')) +
       '</div></div>';
   }
-  function userBubble(text) {
-    return '<div class="msg me"><div class="bubble">' + esc(text) + '</div></div>';
+  function userBubble(text, idx) {
+    return '<div class="msg me"><div class="me-col"><div class="bubble">' + esc(text) + '</div>' +
+      (idx == null || idx < 0 ? '' : msgTools(idx, 'me')) + '</div></div>';
+  }
+  // 말풍선 아래 작은 액션 줄: 내 질문엔 삭제만, 장영휘 답변엔 복사 + 삭제
+  function msgTools(idx, who) {
+    return '<div class="msg-tools">' +
+      (who === 'ai' ? '<button type="button" data-copy="' + idx + '">복사</button>' : '') +
+      '<button type="button" class="del" data-del="' + idx + '" aria-label="이 메시지 삭제">삭제</button>' +
+      '</div>';
   }
   function bindMsgTools() {
     document.querySelectorAll('[data-copy]').forEach(function (b) {
@@ -10821,6 +10883,60 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
         if (m) copyText(m.content, '답변을 복사했다');
       });
     });
+    document.querySelectorAll('[data-del]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        deleteMessage(b.getAttribute('data-del'));
+      });
+    });
+  }
+  /* ---------- 상담 기록 지우기 ---------- */
+  // 한 줄만 지운다. 저장은 바로, 화면·기록 개수는 renderChat이 다시 그린다.
+  function deleteMessage(idx) {
+    if (state.streaming) { toast('답변 오는 중이야. 끝나고 지워.'); return; }
+    var msgs = messagesOf();
+    var i = parseInt(idx, 10);
+    if (!(i >= 0 && i < msgs.length)) return;
+    msgs.splice(i, 1);
+    saveChats();
+    renderChat();
+    toast('메시지를 지웠다');
+  }
+  // 비우기 버튼은 한 번 눌러 '지울까?'로 바꾸고, 한 번 더 눌러야 실제로 지운다.
+  var clearTimer = null;
+  function resetClearBtn() {
+    var b = $('actClear');
+    if (clearTimer) { clearTimeout(clearTimer); clearTimer = null; }
+    if (!b) return;
+    b.classList.remove('confirming');
+    b.textContent = '비우기';
+    b.setAttribute('aria-label', '상담 기록 비우기');
+  }
+  function armClearBtn() {
+    var b = $('actClear');
+    if (!b) return;
+    b.classList.add('confirming');
+    b.textContent = '지울까?';
+    b.setAttribute('aria-label', '한 번 더 누르면 상담 기록을 비웁니다');
+    if (clearTimer) clearTimeout(clearTimer);
+    clearTimer = setTimeout(resetClearBtn, 4000);
+  }
+  function clearChatAll() {
+    var b = $('actClear');
+    if (state.streaming) { resetClearBtn(); toast('답변 오는 중이야. 끝나고 지워.'); return; }
+    var msgs = messagesOf();
+    if (!msgs.length) { resetClearBtn(); toast('지울 기록이 없다'); return; }
+    msgs.length = 0;
+    saveChats();
+    resetClearBtn();
+    renderChat();
+    toast('상담 기록을 비웠다');
+    if (b && b.blur) b.blur();
+  }
+  function onClearClick() {
+    var b = $('actClear');
+    if (!b) return;
+    if (b.classList.contains('confirming')) clearChatAll();
+    else armClearBtn();
   }
   function md(text) {
     var s = esc(text);
@@ -10833,16 +10949,23 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
     var el = $('chatCtx');
     if (!el) return;
     var partner = state.chatPartnerId ? getProfile(state.chatPartnerId) : null;
+    var n = messagesOf().length;
+    var parts = [];
     if (partner) {
-      el.innerHTML = '궁합 상담 중 · ' + esc(partner.name) + '<button id="ctxClear">해제</button>';
-      var b = $('ctxClear');
-      if (b) b.addEventListener('click', function () {
-        state.chatPartnerId = null;
-        renderChat();
-      });
-    } else {
-      el.textContent = messagesOf().length ? ('기록 ' + messagesOf().length + '개') : '';
+      // 좁은 화면에서도 '해제'가 밀리지 않게 이름만 줄어들게 두고 ✕는 고정한다.
+      // 궁합 상담 중에는 이름 칩이 기록 개수 자리를 대신 쓴다.
+      parts.push('<span class="ctx-p"><b class="ctx-ic">合</b>' +
+        '<span class="ctx-txt">' + esc(partner.name) + '</span>' +
+        '<button id="ctxClear" type="button" aria-label="궁합 상담 해제">✕</button></span>');
+    } else if (n) {
+      parts.push('<span id="chatCount">기록 ' + n + '개</span>');
     }
+    el.innerHTML = parts.join('<span class="ctx-sep">·</span>');
+    var b = $('ctxClear');
+    if (b) b.addEventListener('click', function () {
+      state.chatPartnerId = null;
+      renderChat();
+    });
   }
 
   function renderBanner() {
@@ -11627,6 +11750,7 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
       var p = activeProfile();
       download('장영휘-상담-' + (p.name || '사주') + '-' + ymdstamp() + '.txt', transcript(p).replace(/[*#`]/g, ''), 'text/plain');
     });
+    $('actClear').addEventListener('click', onClearClick);
 
     document.addEventListener('click', function (e) {
       var t = e.target.closest ? e.target.closest('[data-toon]') : null;

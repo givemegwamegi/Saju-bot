@@ -10957,7 +10957,7 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
     return callOpenAICompatible(cfg, systemPrompt, history, onDelta, signal);
   }
 
-  /* 구글이 잠깐 붐빌 때(429·5xx) 스스로 한 번 더 시도하고, 그래도 안 되면 더 가벼운 모델로 넘어간다.
+  /* 구글이 잠깐 붐빌 때(429·5xx) 스스로 한 번 더 시도하고, 그래도 429·503이면 더 가벼운 모델로 넘어간다.
    * 재시도는 첫 응답(연결) 단계에서만 한다. 본문이 흐르기 시작한 뒤에는 이미 화면에 답이 찍혔으므로 건드리지 않는다. */
   var GEMINI_FALLBACK_MODEL = 'gemini-3.6-flash';
   var RETRY_WAIT_MS = 1200;
@@ -11012,8 +11012,9 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
       if (signal && signal.aborted) throw abortError();
       res = await geminiRequest(cfg, primary, systemPrompt, contents, signal);
 
-      // 2) 그래도 오버부하(503)이고 기본 모델이면 더 가벼운 모델로 한 번.
-      if (!res.ok && res.status === 503 && primary === MODELS.gemini[0]) {
+      // 2) 그래도 한도 초과(429)이거나 오버부하(503)이고 기본 모델이면 더 가벼운 모델로 한 번.
+      //    이미 가벼운 모델(3.6)이면 더 내려갈 곳이 없으니 그대로 오류를 낸다.
+      if (!res.ok && (res.status === 429 || res.status === 503) && primary === MODELS.gemini[0]) {
         if (onStatus) onStatus('아직 붐비나 봐. 다른 모델로 넘어가서 받아올게…');
         await sleep(FALLBACK_WAIT_MS);
         if (signal && signal.aborted) throw abortError();

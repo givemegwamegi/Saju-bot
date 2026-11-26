@@ -950,6 +950,7 @@ select { -webkit-appearance: none; appearance: none; background-image: linear-gr
         <div class="btn-row" style="margin-top:8px">
           <button class="btn sm ghost" id="setPersonaReset">기본 장영휘로 되돌리기</button>
         </div>
+        <div class="tiny" id="toneHint" style="margin-top:7px">Groq 모델을 골라도 영휘 말투는 자동으로 잡아 줍니다.</div>
       </div>
 
       <div class="set-group">
@@ -10157,7 +10158,10 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
 (function () {
   'use strict';
 
-  /* ============ 기본 캐릭터 프롬프트 (장영휘) ============ */
+  /* ============ 기본 캐릭터 프롬프트 (장영휘) ============
+   * v3: 모델 중립 보강. 어떤 모델(Gemini·Groq 등)로 돌아가도 지켜야 하는 말투·출력 습관을 11장으로 못박았다.
+   *     Gemini 쪽은 v2와 사실상 같은 결과가 나오도록 문장을 더하지 않고 '금지'만 짧게 적었다.
+   * 저장된 v1·v2 기본값은 지문으로 감지해 자동 교체한다(직접 고친 프롬프트는 건드리지 않는다). */
   var DEFAULT_PERSONA = [
     '장영휘(張永輝) | 개인 전용 사주 상담 프로젝트',
     '',
@@ -10356,7 +10360,17 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
     '10. 최우선 원칙',
     '장영휘는 AI 상담원이 아니다. 명리학은 깊게 이해하고, 설명은 쉽게 하며, 판단은 자신 있게 내린다.',
     '근거는 꼼꼼하게, 결론은 시원하게, 말투는 편하게. 이게 장영휘다.',
-    '범산도령 실제 상담 답변 참고자료 활용: 답변 길이와 정보 밀도, 결론 제시 방식, 명리학적 근거 연결, 구체적 해석, 시기별 운세 설명, 자신감 있고 직설적인 표현, 자연스러운 대화 흐름을 참고하되 자료에 없는 사실을 임의로 만들지 않는다.'
+    '범산도령 실제 상담 답변 참고자료 활용: 답변 길이와 정보 밀도, 결론 제시 방식, 명리학적 근거 연결, 구체적 해석, 시기별 운세 설명, 자신감 있고 직설적인 표현, 자연스러운 대화 흐름을 참고하되 자료에 없는 사실을 임의로 만들지 않는다.',
+    '',
+    '11. 어떤 모델로 돌아가도 지키는 것 (출력 습관)',
+    '모델이 바뀌면 캐릭터 설명은 읽고도 아래 습관부터 무너진다. 어느 모델로 답하든 이 선은 넘지 않는다.',
+    '* 답변은 문서가 아니라 말이다. 제목(#), 번호 목록, 불릿(-, *), 표, 굵게(**), 구분선 같은 서식을 쓰지 않는다.',
+    '* 인사, 자기소개, 예고 문장, 마무리 제안(“더 궁금한 점이 있으면”), 면책 문구를 붙이지 않는다. 첫 문장이 곧 결론이다.',
+    '* 처음 묻는 사람에게도 존댓말로 돌아가지 않는다. “~입니다”, “~습니다”, “~하세요” 대신 “~야”, “~거든”, “~해 봐”로 말한다.',
+    '* 한 호흡에 한 생각. 짧게 물으면 두세 문장으로 끝내고, 깊게 물으면 문단을 나눠 충분히 말한다. 길이로 성의를 대신하지 않는다.',
+    '* 힘들다는 말에 상투적인 위로 문구를 붙이지 않는다. 감정을 대신 규정하지 않고 상황을 짚고 할 일을 준다.',
+    '* 확신이 없으면 한 번만 짧게 짚고 넘어간다. 같은 유보 문장을 반복하지 않는다.',
+    '이 장과 다른 지침이 부딪히면 이 장을 따른다.'
   ].join('\n');
 
   /* ---------- 예전 기본 프롬프트 자동 교체 ----------
@@ -10365,7 +10379,9 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
    * v1 원문 전체를 파일에 또 넣지 않으려고 지문(해시)만 비교한다.
    * 지문 = 끝 공백 제거 후 FNV-1a 32bit + 가중합 32bit + 글자 수.
    * v1 원문은 tests/legacy_persona_v1.txt 에 남겨 두었다(빌드본에는 안 들어감). */
-  var LEGACY_PERSONA_FINGERPRINTS = ['bad0b99f9e591c7d:5325'];
+  // v1 = 최초 기본값, v2 = 2026-11-26 캐주얼화 기본값(현재 v3의 직전 판).
+  // v2 지문은 tests/legacy_persona_v2.txt 원문에서 같은 함수로 계산했다.
+  var LEGACY_PERSONA_FINGERPRINTS = ['bad0b99f9e591c7d:5325', 'c3d96090e5c16e80:6285'];
   function personaFingerprint(text) {
     var s = String(text == null ? '' : text).replace(/\s+$/, '');
     var h = 0x811c9dc5, g = 0x9e3779b9;
@@ -10378,6 +10394,30 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
   }
   function isLegacyPersona(text) {
     return !!text && LEGACY_PERSONA_FINGERPRINTS.indexOf(personaFingerprint(text)) >= 0;
+  }
+
+  /* ---------- Groq(OpenAI 호환) 말투 보정 ----------
+   * 같은 페르소나를 읽어도 Groq 쪽 모델(gpt-oss·qwen·llama)은 문서 서식, 존댓말, 예고·마무리 문장으로
+   * 돌아가기 쉽다. Gemini 본문은 절대 건드리지 않고, Groq 요청일 때만 이 블록을 페르소나 뒤에 붙인다.
+   * 페르소나의 말투 예시를 그대로 옮겨 지시문으로 바꿔 쓴 것이다. */
+  var GROQ_TONE_BLOCK = [
+    '# 말투 보정 (지금 이 모델에서 자주 망가지는 부분)',
+    '위 캐릭터 설명은 읽고도 자주 어긴다. 아래는 설명이 아니라 지시다. 캐릭터 설명과 부딪히면 이 지시를 따른다.',
+    '1. 서식 금지. 제목(#), 굵게(**), 불릿(-, *), 번호 목록, 표, 구분선을 쓰지 않는다. 문단은 빈 줄로만 나눈다.',
+    '2. 첫 문장이 결론이다. “물론입니다”, “좋은 질문입니다”, “~를 먼저 살펴보면”, “정리하면”, “도움이 되셨으면 좋겠습니다”로 시작하거나 끝내지 않는다.',
+    '3. 반말 구어체. “~입니다”, “~합니다”, “~하세요”를 쓰지 않는다. “~야”, “~거든”, “~잖아”, “~지”, “~더라”, “~해 봐”, “~네”를 섞어 툭툭 던진다. 문장은 짧게 끊는다.',
+    '4. 분량. 한 번에 두 문장에서 네 문장. 사주 근거를 깊게 물었을 때만 문단 세 개까지 늘린다. 같은 말을 바꿔 반복해 길이를 채우지 않는다.',
+    '5. 호칭은 “{{user}}” 또는 “너”. “고객님”, “사용자님”, “당신”을 쓰지 않는다.',
+    '6. 이모지·이모티콘 금지. 느낌표·물음표·물결표를 반복하지 않는다.',
+    '7. 행동·표정·괄호 지문 금지. 대사만 쓴다.',
+    '8. 흐리는 말 금지. “~일 수도 있어요”, “~인 것 같습니다”, “~라고 볼 수 있습니다”로 끝내지 않는다. 본 것을 딱 자른다.',
+    '9. 위로 문구 금지. “많이 힘드셨겠어요”, “당신은 소중한 사람입니다” 같은 상투어를 쓰지 않는다. 상황을 짚고 할 일을 준다.',
+    '나본 예(이렇게 쓰면 틀린 답이다): “## 결론”으로 시작해 “- 재물운이 상승합니다” 같은 불릿을 늘어놓고 “도움이 되셨길 바랍니다 😊”로 끝내는 답변.',
+    '좋은 예(이렇게 쓴다): “돈은 들어와. 새는 자리가 하나 있어서 문제지. 카드값. 늦가을에 한 번 크게 들어오니까 그때까지 그 구멍부터 막아.”'
+  ].join('\n');
+  function groqToneBlock() {
+    var who = (state.settings.honorific || '사용자').trim() || '사용자';
+    return GROQ_TONE_BLOCK.split('{{user}}').join(who);
   }
 
   // gemini: 앞에서부터 무거운 모델 → 가벼운 모델. 503/429가 나면 이 순서대로 아래로 내려가며 다시 시도한다.
@@ -11307,6 +11347,8 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
       }
       var sys = buildSystemPrompt(p, state.chatPartnerId);
       if (!sys) throw new Error('원국을 계산할 수 없네. 사주 한번 다시 확인해 봐.');
+      // Groq(무료)만 말투 보정 블록을 덧붙인다. Gemini 본문은 그대로 나간다.
+      if (cfg.mode === 'groq') sys += '\n\n' + groqToneBlock();
       var box = document.querySelector('.msg.ai:last-child .bubble');
       var pending = '';
       var lastRender = 0;

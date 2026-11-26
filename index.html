@@ -408,6 +408,15 @@ a { color: var(--blue); text-decoration: none; }
 /* 짧은 한 줄 답도 글자 폭에 맞춰 앉도록(폭 계산이 min-content로 주저앉지 않게) */
 .msg.ai > div { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; max-width: calc(100% - 46px); }
 .msg.ai .bubble { max-width: 100%; width: max-content; }
+/* 오류 말풍선: 꿀떡 먹으며 쉬는 장영휘를 문구 위에 같이 띄운다.
+   글자 폭(max-content) 대신 그림 폭에 맞춰 앉으므로 width를 풀어 둔다. */
+.msg.ai .bubble.err { width: auto; max-width: 100%; }
+.bubble .err-img {
+  display: block; width: 100%; max-width: 240px; height: auto;
+  border-radius: 10px; margin-bottom: 8px;
+  border: 1px solid rgba(140, 170, 230, .18);
+  background: rgba(10, 18, 36, .55);
+}
 .msg.me .bubble {
   background: linear-gradient(170deg, rgba(58, 46, 24, .92), rgba(46, 37, 20, .92));
   border: 1px solid rgba(217, 184, 114, .3);
@@ -10903,7 +10912,7 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
       html += aiBubble('왔네. 사주는 다 봐 뒀어. 뭐 궁금한지 말해 봐.');
     } else {
       msgs.forEach(function (m, i) {
-        html += m.role === 'user' ? userBubble(m.content, i) : aiBubble(m.content, m.sample && !m.error, i);
+        html += m.role === 'user' ? userBubble(m.content, i) : aiBubble(m.content, m.sample && !m.error, i, false, isRestBubble(m));
       });
     }
     if (state.streaming) html += aiBubble('<span class="typing"><i></i><i></i><i></i></span>' +
@@ -10915,10 +10924,18 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
     renderChatCtx();
   }
 
-  function aiBubble(text, isSample, idx, raw) {
+  // 오류 말풍선에는 꿀떡 먹으며 쉬는 장영휘를 함께 띄운다.
+  // 서버·API·네트워크 오류(error: true)만 해당하고, 사용자가 직접 전송을 멈춘 줄은 뺀다.
+  function isRestBubble(m) {
+    if (!m || !m.error || m.abort) return false;
+    return m.content !== '전송을 멈췄다.';
+  }
+  function aiBubble(text, isSample, idx, raw, isRest) {
     return '<div class="msg ai"><div class="msg-av"><img src="./assets/profile.jpg" alt="장영휘"></div><div>' +
       (isSample ? '<span class="msg-tag">샘플 미리보기</span>' : '') +
-      '<div class="bubble" data-idx="' + (idx == null ? '' : idx) + '">' + (raw ? text : md(text)) + '</div>' +
+      '<div class="bubble' + (isRest ? ' err' : '') + '" data-idx="' + (idx == null ? '' : idx) + '">' +
+      (isRest ? '<img class="err-img" src="./assets/resting-tteok.jpg" alt="꿀떡 먹으며 잠시 쉬는 장영휘">' : '') +
+      (raw ? text : md(text)) + '</div>' +
       (idx == null || idx < 0 ? '' : msgTools(idx, 'ai')) +
       '</div></div>';
   }
@@ -11477,7 +11494,8 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
       if (e && (e.name === 'TypeError' || /Failed to fetch|NetworkError/i.test(msg))) {
         msg = '기운이 중간에 끊겼네. 연결 한번 확인하고 다시 걸어 봐.';
       }
-      msgs.push({ role: 'assistant', content: msg, ts: Date.now(), sample: true, error: true });
+      msgs.push({ role: 'assistant', content: msg, ts: Date.now(), sample: true, error: true,
+        abort: !!(e && e.name === 'AbortError') });
       saveChats();
     } finally {
       state.streaming = false;

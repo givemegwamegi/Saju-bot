@@ -425,6 +425,8 @@ a { color: var(--blue); text-decoration: none; }
 }
 .typing i:nth-child(2) { animation-delay: .16s; }
 .typing i:nth-child(3) { animation-delay: .32s; }
+.ai-note { margin-top: 7px; font-size: 12px; line-height: 1.55; color: var(--muted2); }
+.ai-note:empty { display: none; }
 @keyframes blink { 0%, 100% { opacity: .25; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-2px); } }
 
 .composer {
@@ -10317,7 +10319,8 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
     ui: { activeProfileId: null, partnerId: null, tab: 'chart' },
     chartCache: {},
     streaming: false,
-    abort: null
+    abort: null,
+    aiNote: ''
   };
 
   function defaultSettings() {
@@ -10747,7 +10750,8 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
         html += m.role === 'user' ? userBubble(m.content) : aiBubble(m.content, m.sample, i);
       });
     }
-    if (state.streaming) html += aiBubble('<span class="typing"><i></i><i></i><i></i></span>', false, -1, true);
+    if (state.streaming) html += aiBubble('<span class="typing"><i></i><i></i><i></i></span>' +
+      '<div class="ai-note" id="aiNote">' + esc(state.aiNote || '') + '</div>', false, -1, true);
     box.innerHTML = html;
     box.scrollTop = box.scrollHeight;
     bindMsgTools();
@@ -10904,17 +10908,29 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
     });
   }
 
-  async function callAI(cfg, systemPrompt, history, onDelta, signal) {
-    if (cfg.mode === 'gemini') return callGemini(cfg, systemPrompt, history, onDelta, signal);
+  async function callAI(cfg, systemPrompt, history, onDelta, signal, onStatus) {
+    if (cfg.mode === 'gemini') return callGemini(cfg, systemPrompt, history, onDelta, signal, onStatus);
     return callOpenAICompatible(cfg, systemPrompt, history, onDelta, signal);
   }
 
-  async function callGemini(cfg, systemPrompt, history, onDelta, signal) {
-    var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(cfg.model) +
+  /* 구글이 잠깐 붐빌 때(429·5xx) 스스로 한 번 더 시도하고, 그래도 안 되면 더 가벼운 모델로 넘어간다.
+   * 재시도는 첫 응답(연결) 단계에서만 한다. 본문이 흐르기 시작한 뒤에는 이미 화면에 답이 찍혔으므로 건드리지 않는다. */
+  var GEMINI_FALLBACK_MODEL = 'gemini-3.6-flash';
+  var RETRY_WAIT_MS = 1200;
+  var FALLBACK_WAIT_MS = 700;
+  function isTransientStatus(status) {
+    return status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+  }
+  function abortError() {
+    var e = new Error('전송을 멈췄다.');
+    e.name = 'AbortError';
+    return e;
+  }
+
+  // 한 모델로 한 번 요청한다. thinking_level을 모르는 모델·버전이면 400이 오므로 기본 설정으로 한 번 더 시도한다.
+  async function geminiRequest(cfg, model, systemPrompt, contents, signal) {
+    var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) +
       ':streamGenerateContent?alt=sse&key=' + encodeURIComponent(cfg.key);
-    var contents = history.map(function (m) {
-      return { role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] };
-    });
     // Gemini 3.x는 사고량을 thinking_level(low/medium/high)로만 조절한다.
     // thinking_budget은 폐기되어 400이 날 수 있으므로 쓰지 않는다.
     var fast = {
@@ -10922,23 +10938,47 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
       thinkingConfig: { thinkingLevel: 'LOW' }
     };
     var plain = { temperature: 0.95, maxOutputTokens: 8192 };
-    var attempts = /^gemini-3/.test(cfg.model) ? [fast, plain] : [plain];
+    var attempts = /^gemini-3/.test(model) ? [fast, plain] : [plain];
+    var body = { systemInstruction: { parts: [{ text: systemPrompt }] }, contents: contents };
     var res = null;
     for (var i = 0; i < attempts.length; i++) {
+      body.generationConfig = attempts[i];
       res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: systemPrompt }] },
-          contents: contents,
-          generationConfig: attempts[i]
-        }),
+        body: JSON.stringify(body),
         signal: signal
       });
-      // thinking_level을 받지 않는 모델·버전이면 400이 오므로 기본 설정으로 한 번 더 시도한다.
       if (res.ok || res.status !== 400 || i === attempts.length - 1) break;
     }
+    return res;
+  }
+
+  async function callGemini(cfg, systemPrompt, history, onDelta, signal, onStatus) {
+    var contents = history.map(function (m) {
+      return { role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] };
+    });
+    var primary = cfg.model || MODELS.gemini[0];
+    var res = await geminiRequest(cfg, primary, systemPrompt, contents, signal);
+
+    if (!res.ok && isTransientStatus(res.status)) {
+      // 1) 약 1.2초 쉬었다가 같은 모델로 한 번 더.
+      if (onStatus) onStatus('응답이 잠시 밀린다. 조금 기다렸다 한 번 더 물어보는 중…');
+      await sleep(RETRY_WAIT_MS);
+      if (signal && signal.aborted) throw abortError();
+      res = await geminiRequest(cfg, primary, systemPrompt, contents, signal);
+
+      // 2) 그래도 붐비고 기본 모델이면 더 가벼운 모델로 한 번.
+      if (!res.ok && isTransientStatus(res.status) && primary === MODELS.gemini[0]) {
+        if (onStatus) onStatus('아직 붐비는 모양이다. 다른 모델로 넘어가서 받아 오는 중…');
+        await sleep(FALLBACK_WAIT_MS);
+        if (signal && signal.aborted) throw abortError();
+        res = await geminiRequest(cfg, GEMINI_FALLBACK_MODEL, systemPrompt, contents, signal);
+      }
+    }
+
     if (!res.ok) throw await httpError(res);
+    if (onStatus) onStatus('');
     await readSSE(res, function (obj) {
       var cand = (obj.candidates || [])[0];
       if (!cand || !cand.content || !cand.content.parts) return '';
@@ -11024,7 +11064,11 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
       401: '키가 인증되지 않았다. 설정에서 API 키를 다시 확인해라.',
       403: '이 키로는 그 모델을 쓸 수 없다. 권한이나 결제 상태를 확인해라.',
       404: '모델을 찾을 수 없다. 모델명을 확인해라.',
-      429: '요청 한도를 넘었다. 잠시 뒤에 다시 하거나 다른 키를 써라.'
+      429: '요청 한도를 넘었다. 잠시 뒤에 다시 하거나 다른 키를 써라.',
+      500: '서버 쪽에 일시적인 오류가 났다. 잠시 뒤에 다시 시도해라.',
+      502: '서버 연결이 잠시 끊겼다. 잠시 뒤에 다시 시도해라.',
+      503: '지금 서버가 붐벼서 답을 못 준다. 잠시 뒤에 다시 시도해라.',
+      504: '서버 응답이 제때 오지 않았다. 잠시 뒤에 다시 시도해라.'
     };
     var msg = map[res.status] || ('API 오류 ' + res.status);
     var err = new Error(msg + ' (' + detail + ')');
@@ -11081,7 +11125,8 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
           if (box) box.innerHTML = md(answer);
           $('msgs').scrollTop = $('msgs').scrollHeight;
         }
-      }, state.abort.signal);
+        if (state.aiNote) setAiNote('');
+      }, state.abort.signal, function (note) { setAiNote(note); });
       if (!answer.trim()) answer = '응답이 비어 있다. 모델이나 키를 확인해라.';
       msgs.push({ role: 'assistant', content: answer, ts: Date.now() });
       saveChats();
@@ -11095,10 +11140,17 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
     } finally {
       state.streaming = false;
       state.abort = null;
+      state.aiNote = '';
       renderChat();
     }
   }
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  // 답이 오기 전 재시도·폴백 상태를 대기 말풍선 안에 짧게 보여 준다.
+  function setAiNote(text) {
+    state.aiNote = text || '';
+    var el = document.getElementById('aiNote');
+    if (el) el.textContent = state.aiNote;
+  }
   function ymdstamp() {
     var d = new Date();
     return d.getFullYear() + pad2(d.getMonth() + 1) + pad2(d.getDate());

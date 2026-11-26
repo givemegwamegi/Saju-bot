@@ -10423,7 +10423,7 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
   // gemini: 앞에서부터 무거운 모델 → 가벼운 모델. 503/429가 나면 이 순서대로 아래로 내려가며 다시 시도한다.
   var MODELS = {
     gemini: ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'],
-    groq: ['openai/gpt-oss-120b', 'qwen/qwen3.8-27b', 'llama-3.3-70b-versatile'],
+    groq: ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'qwen/qwen3.8-27b'],
     openai: ['gpt-4o-mini', 'gpt-4.1-mini', 'gpt-4o'],
     openrouter: ['google/gemini-2.0-flash-001', 'meta-llama/llama-3.3-70b-instruct:free', 'deepseek/deepseek-chat-v3-0324:free', 'anthropic/claude-3.5-haiku'],
     custom: []
@@ -10435,7 +10435,7 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
     },
     groq: {
       label: 'Groq',
-      guide: 'Groq(<a href="https://console.groq.com/keys" target="_blank" rel="noopener">console.groq.com/keys</a>)에서 무료 키를 만들 수 있습니다. 기본 모델 <b>openai/gpt-oss-120b</b>는 무료 한도로 쓸 수 있습니다. 한도(TPM)나 모델 문제로 막히면 <b>qwen/qwen3.8-27b → llama-3.3-70b-versatile</b>로 알아서 넘어갑니다. 구글 서버가 통째로 밀릴 때 백업으로 쓰기 좋습니다.'
+      guide: 'Groq(<a href="https://console.groq.com/keys" target="_blank" rel="noopener">console.groq.com/keys</a>)에서 무료 키를 만들 수 있습니다. 기본 모델 <b>openai/gpt-oss-120b</b>는 무료 한도로 쓸 수 있습니다. 한도(TPM)나 모델 문제로 막히면 <b>openai/gpt-oss-20b → qwen/qwen3.8-27b</b>로 알아서 넘어갑니다. 구글 서버가 통째로 밀릴 때 백업으로 쓰기 좋습니다.'
     },
     openai: {
       label: 'OpenAI',
@@ -10515,6 +10515,8 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
   function normalizeModel(mode, model) {
     var m = String(model == null ? '' : model).trim().replace(/^models\//, '');
     if (mode === 'gemini' && /^gemini-2(\.|$)/.test(m)) m = MODELS.gemini[0];
+    // Groq의 llama-3.3-70b-versatile은 무료 키에서 404가 나는 모델이라 기본 모델로 올린다.
+    if (mode === 'groq' && /^llama-3\.3-70b/.test(m)) m = MODELS.groq[0];
     return m;
   }
   function mergeSettings(base, s) {
@@ -11170,8 +11172,17 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
   function isGroqSwitchStatus(status) { return isGroqRetryStatus(status) || GROQ_SWITCH_STATUS.indexOf(status) >= 0; }
   // 지금 고른 Groq 모델부터 목록 끝까지의 폴백 순서. 목록에 없는 이름이면 그 모델 하나만.
   function groqChain(primary) {
-    var i = MODELS.groq.indexOf(primary);
-    return i < 0 ? [primary] : MODELS.groq.slice(i);
+    var m = normalizeModel('groq', primary);
+    var i = MODELS.groq.indexOf(m);
+    return i < 0 ? [m] : MODELS.groq.slice(i);
+  }
+  // 폴백 끝의 404에 가려진 실제 원인(용량·한도·서버 문제). 404·422는 '모델·요청이 안 맞음'이라 원인으로 안 본다.
+  var GROQ_REAL_CAUSE = [408, 413, 429, 500, 502, 503, 504, 529];
+  function firstRealCause(statuses) {
+    for (var i = 0; i < statuses.length; i++) {
+      if (GROQ_REAL_CAUSE.indexOf(statuses[i]) >= 0) return statuses[i];
+    }
+    return 0;
   }
   function abortError() {
     var e = new Error('전송을 멈췄다.');
@@ -11253,25 +11264,36 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
       if (/\/chat\/completions$/.test(base)) base = base.replace(/\/chat\/completions$/, '');
     }
     var url = base + '/chat/completions';
-    var msgs = [{ role: 'system', content: systemPrompt }].concat(history);
     var headers = { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + cfg.key };
     if (cfg.mode === 'openrouter') {
       headers['HTTP-Referer'] = location.href;
       headers['X-Title'] = 'Jang Yeonghwi Saju';
     }
-    var body = { messages: msgs, stream: true, temperature: 0.95, max_tokens: 2600 };
+    // 본문은 보낼 때마다 새로 만든다. 413(요청·TPM 한도 초과)을 받으면 다음 모델은 히스토리와 max_tokens를 줄여 보낸다.
+    var historyLimit = 12, maxTokens = 2600;
+    function sendBody(model) {
+      var hist = historyLimit < history.length ? history.slice(-historyLimit) : history.slice();
+      // 잘라 낸 앞자리가 assistant면 user가 나올 때까지 버린다. OpenAI 호환 API는 첫 메시지가 user여야 한다.
+      while (hist.length && hist[0].role !== 'user') hist = hist.slice(1);
+      return {
+        model: model,
+        messages: [{ role: 'system', content: systemPrompt }].concat(hist),
+        stream: true, temperature: 0.95, max_tokens: maxTokens
+      };
+    }
     function send(model) {
-      body.model = model;
       return fetch(url, {
         method: 'POST',
         headers: headers,
-        body: JSON.stringify(body),
+        body: JSON.stringify(sendBody(model)),
         signal: signal
       });
     }
     // Groq만 모델 폴백을 쓴다. OpenAI·OpenRouter·직접입력은 고른 모델 하나로만 요청한다(기존과 동일).
     var chain = cfg.mode === 'groq' ? groqChain(cfg.model) : [cfg.model];
+    var tried = [];
     var res = await send(chain[0]);
+    tried.push(res.status);
 
     if (cfg.mode === 'groq' && !res.ok && isGroqSwitchStatus(res.status)) {
       // 1) 일시 오류(429·5xx 등)면 약 0.8초 쉬었다가 같은 모델로 한 번 더. 413·404·422는 바로 다음 모델.
@@ -11281,18 +11303,33 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
         await sleep(RETRY_WAIT_MS);
         if (signal && signal.aborted) throw abortError();
         res = await send(chain[0]);
+        tried.push(res.status);
       }
 
-      // 2) 그래도 막히면 목록의 아래 모델로 차례로 내려간다. gpt-oss-120b → qwen3.8 → llama-3.3-70b.
+      // 2) 그래도 막히면 목록의 아래 모델로 차례로 내려간다. gpt-oss-120b → gpt-oss-20b → qwen3.8.
       for (var i = 1; i < chain.length && !res.ok && isGroqSwitchStatus(res.status); i++) {
+        // 413은 모델을 바꿔도 요청이 크면 또 난다. 다음 모델은 히스토리 4개·max_tokens 1200으로 줄여 보낸다.
+        if (res.status === 413 && maxTokens > 1200) { historyLimit = 4; maxTokens = 1200; }
         if (onStatus) onStatus(i === 1 ? '아직 붐비나 봐. 다른 모델로 넘어가서 받아올게…' : '한 단계 더 내려가서 받아올게…');
         await sleep(FALLBACK_WAIT_MS);
         if (signal && signal.aborted) throw abortError();
         res = await send(chain[i]);
+        tried.push(res.status);
       }
     }
 
-    if (!res.ok) throw await httpError(res);
+    if (!res.ok) {
+      // 마지막 백업이 404로 끝나도 앞 모델이 413·429·503처럼 실제로 막혔던 거면 그 원인을 알린다.
+      // 모델 이름이 정말 틀린 경우(앞도 전부 404·422)에만 '그런 이름의 모델은 없어'를 쓴다.
+      if (cfg.mode === 'groq' && res.status === 404) {
+        var cause = firstRealCause(tried.slice(0, -1));
+        if (cause) {
+          try { console.warn('[saju] Groq 폴백 끝 404 — 앞선 원인 ' + cause + '로 안내'); } catch (e) { }
+          throw statusError(cause);
+        }
+      }
+      throw await httpError(res);
+    }
     if (onStatus) onStatus('');
     await readSSE(res, function (obj) {
       var ch = (obj.choices || [])[0];
@@ -11334,6 +11371,30 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
     }
   }
 
+  // 상태 코드 하나를 장영휘 말로 옮긴다. 폴백 끝에 가려진 앞선 원인을 알릴 때도 같은 문구를 쓴다.
+  function errorTextFor(status) {
+    var busy = '꿀떡 휴식타임중🍡나중에 다시 와';
+    var map = {
+      400: '내가 말 거는 방식이 신당 쪽이랑 안 맞네. 설정에서 모델 이름 한번 봐 줘.',
+      401: '열쇠가 안 맞네. 오른쪽 위 설정에서 API 키 한번 다시 봐 줘.',
+      403: '이 열쇠로는 문이 안 열리네. 설정에서 권한이나 결제 상태 한번 봐 줘.',
+      404: '그런 이름의 모델은 없어. 설정에서 모델 이름 다시 봐 줘.',
+      413: '한 번에 보내는 말이 너무 많았나 봐. 대화를 조금 줄이고 다시 걸어 봐.',
+      429: '오늘은 기운을 너무 많이 썼어. 조금 쉬었다가 다시 얘기하자.',
+      500: busy,
+      502: busy,
+      503: busy,
+      504: busy
+    };
+    // map에 없는 코드는 무엇이 걸렸는지 알 수 있게 상태 코드를 괄호로 붙인다. (예: 418·529)
+    return map[status] || '신당 쪽에서 뭔가 걸렸나 봐. 잠시 뒤에 다시 걸어 봐. (코드: ' + status + ')';
+  }
+  function statusError(status) {
+    var err = new Error(errorTextFor(status));
+    err.status = status;
+    return err;
+  }
+
   async function httpError(res) {
     var detail = '';
     try {
@@ -11344,23 +11405,7 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
     }
     // 장영휘는 시스템 문구를 읽지 않는다. 화면에는 자기 말만 남기고 원문은 콘솔에만 남긴다.
     if (detail) { try { console.warn('[saju] API ' + res.status + ' — ' + detail); } catch (e) { } }
-    var busy = '꿀떡 휴식타임중🍡나중에 다시 와';
-    var map = {
-      400: '내가 말 거는 방식이 신당 쪽이랑 안 맞네. 설정에서 모델 이름 한번 봐 줘.',
-      401: '열쇠가 안 맞네. 오른쪽 위 설정에서 API 키 한번 다시 봐 줘.',
-      403: '이 열쇠로는 문이 안 열리네. 설정에서 권한이나 결제 상태 한번 봐 줘.',
-      404: '그런 이름의 모델은 없어. 설정에서 모델 이름 다시 봐 줘.',
-      429: '오늘은 기운을 너무 많이 썼어. 조금 쉬었다가 다시 얘기하자.',
-      500: busy,
-      502: busy,
-      503: busy,
-      504: busy
-    };
-    // map에 없는 코드는 무엇이 걸렸는지 알 수 있게 상태 코드를 괄호로 붙인다. (예: 413·418·529)
-    var msg = map[res.status] || '신당 쪽에서 뭔가 걸렸나 봐. 잠시 뒤에 다시 걸어 봐. (코드: ' + res.status + ')';
-    var err = new Error(msg);
-    err.status = res.status;
-    return err;
+    return statusError(res.status);
   }
 
   /* ============ 메시지 전송 ============ */
@@ -11728,7 +11773,7 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
     s.tzOffsetMin = parseInt($('setTzOffset').value || '0', 10) || 0;
     s.dayBoundary = $('setDayBoundary').value === 'jojasi' ? 'jojasi' : 'midnight';
     s.keys[s.mode] = $('setKey').value.trim();
-    s.models[s.mode] = $('setModel').value.trim() || (MODELS[s.mode] || [])[0] || '';
+    s.models[s.mode] = normalizeModel(s.mode, $('setModel').value.trim()) || (MODELS[s.mode] || [])[0] || '';
     if (s.mode === 'custom') s.baseUrl = $('setBaseUrl').value.trim();
     return s;
   }

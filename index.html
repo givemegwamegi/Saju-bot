@@ -10435,7 +10435,7 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
     },
     groq: {
       label: 'Groq',
-      guide: 'Groq(<a href="https://console.groq.com/keys" target="_blank" rel="noopener">console.groq.com/keys</a>)에서 무료 키를 만들 수 있습니다. 기본 모델 <b>openai/gpt-oss-120b</b>는 무료 한도로 쓸 수 있습니다. 구글 서버가 통째로 밀릴 때 백업으로 쓰기 좋습니다.'
+      guide: 'Groq(<a href="https://console.groq.com/keys" target="_blank" rel="noopener">console.groq.com/keys</a>)에서 무료 키를 만들 수 있습니다. 기본 모델 <b>openai/gpt-oss-120b</b>는 무료 한도로 쓸 수 있습니다. 한도(TPM)나 모델 문제로 막히면 <b>qwen/qwen3.8-27b → llama-3.3-70b-versatile</b>로 알아서 넘어갑니다. 구글 서버가 통째로 밀릴 때 백업으로 쓰기 좋습니다.'
     },
     openai: {
       label: 'OpenAI',
@@ -11133,7 +11133,7 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
 
   async function callAI(cfg, systemPrompt, history, onDelta, signal, onStatus) {
     if (cfg.mode === 'gemini') return callGemini(cfg, systemPrompt, history, onDelta, signal, onStatus);
-    return callOpenAICompatible(cfg, systemPrompt, history, onDelta, signal);
+    return callOpenAICompatible(cfg, systemPrompt, history, onDelta, signal, onStatus);
   }
 
   /* 구글이 잠깐 붐빌 때(429·5xx) 스스로 한 번 더 시도하고, 그래도 429·503이면 목록의 아래 모델로 차례로 내려간다.
@@ -11148,6 +11148,19 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
   function geminiChain(primary) {
     var i = MODELS.gemini.indexOf(primary);
     return i < 0 ? [primary] : MODELS.gemini.slice(i);
+  }
+
+  /* Groq은 모델마다 분당 토큰(TPM)과 컨텍스트 한도가 달라 하루 종일 413·429가 번갈아 난다.
+   * 그래서 같은 모델에 한 번만 다시 걸어 보고(일시 오류일 때만), 그래도 막히면 목록의 아래 모델로 넘어간다.
+   * 열쇠·권한 문제(401·403)는 모델을 바꿔도 똑같으니 바로 알린다. */
+  var GROQ_RETRY_STATUS = [408, 429, 500, 502, 503, 504, 529];
+  var GROQ_SWITCH_STATUS = [404, 413, 422];
+  function isGroqRetryStatus(status) { return GROQ_RETRY_STATUS.indexOf(status) >= 0; }
+  function isGroqSwitchStatus(status) { return isGroqRetryStatus(status) || GROQ_SWITCH_STATUS.indexOf(status) >= 0; }
+  // 지금 고른 Groq 모델부터 목록 끝까지의 폴백 순서. 목록에 없는 이름이면 그 모델 하나만.
+  function groqChain(primary) {
+    var i = MODELS.groq.indexOf(primary);
+    return i < 0 ? [primary] : MODELS.groq.slice(i);
   }
   function abortError() {
     var e = new Error('전송을 멈췄다.');
@@ -11218,7 +11231,7 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
     }, onDelta);
   }
 
-  async function callOpenAICompatible(cfg, systemPrompt, history, onDelta, signal) {
+  async function callOpenAICompatible(cfg, systemPrompt, history, onDelta, signal, onStatus) {
     var base;
     if (cfg.mode === 'openai') base = 'https://api.openai.com/v1';
     else if (cfg.mode === 'openrouter') base = 'https://openrouter.ai/api/v1';
@@ -11235,13 +11248,41 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
       headers['HTTP-Referer'] = location.href;
       headers['X-Title'] = 'Jang Yeonghwi Saju';
     }
-    var res = await fetch(url, {
-      method: 'POST',
-      headers: headers,
-      body: JSON.stringify({ model: cfg.model, messages: msgs, stream: true, temperature: 0.95, max_tokens: 2600 }),
-      signal: signal
-    });
+    var body = { messages: msgs, stream: true, temperature: 0.95, max_tokens: 2600 };
+    function send(model) {
+      body.model = model;
+      return fetch(url, {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify(body),
+        signal: signal
+      });
+    }
+    // Groq만 모델 폴백을 쓴다. OpenAI·OpenRouter·직접입력은 고른 모델 하나로만 요청한다(기존과 동일).
+    var chain = cfg.mode === 'groq' ? groqChain(cfg.model) : [cfg.model];
+    var res = await send(chain[0]);
+
+    if (cfg.mode === 'groq' && !res.ok && isGroqSwitchStatus(res.status)) {
+      // 1) 일시 오류(429·5xx 등)면 약 0.8초 쉬었다가 같은 모델로 한 번 더. 413·404·422는 바로 다음 모델.
+      //    첫 응답(연결) 단계라 본문이 아직 안 흘렀으니 다시 걸어도 화면에 중복이 안 생긴다.
+      if (isGroqRetryStatus(res.status)) {
+        if (onStatus) onStatus('지금 좀 밀리네. 조금 있다가 한 번 더 물어볼게…');
+        await sleep(RETRY_WAIT_MS);
+        if (signal && signal.aborted) throw abortError();
+        res = await send(chain[0]);
+      }
+
+      // 2) 그래도 막히면 목록의 아래 모델로 차례로 내려간다. gpt-oss-120b → qwen3.8 → llama-3.3-70b.
+      for (var i = 1; i < chain.length && !res.ok && isGroqSwitchStatus(res.status); i++) {
+        if (onStatus) onStatus(i === 1 ? '아직 붐비나 봐. 다른 모델로 넘어가서 받아올게…' : '한 단계 더 내려가서 받아올게…');
+        await sleep(FALLBACK_WAIT_MS);
+        if (signal && signal.aborted) throw abortError();
+        res = await send(chain[i]);
+      }
+    }
+
     if (!res.ok) throw await httpError(res);
+    if (onStatus) onStatus('');
     await readSSE(res, function (obj) {
       var ch = (obj.choices || [])[0];
       if (!ch) return '';
@@ -11304,7 +11345,8 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
       503: busy,
       504: busy
     };
-    var msg = map[res.status] || '신당 쪽에서 뭔가 걸렸나 봐. 잠시 뒤에 다시 걸어 봐.';
+    // map에 없는 코드는 무엇이 걸렸는지 알 수 있게 상태 코드를 괄호로 붙인다. (예: 413·418·529)
+    var msg = map[res.status] || '신당 쪽에서 뭔가 걸렸나 봐. 잠시 뒤에 다시 걸어 봐. (코드: ' + res.status + ')';
     var err = new Error(msg);
     err.status = res.status;
     return err;

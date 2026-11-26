@@ -10430,9 +10430,11 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
     return TONE_BLOCK.split('{{user}}').join(who);
   }
 
-  // gemini: 앞에서부터 무거운 모델 → 가벼운 모델. 503/429가 나면 이 순서대로 아래로 내려가며 다시 시도한다.
+  // gemini: 앞에서부터 무거운 모델 → 가벼운 모델 → 마지막 백업(hydrogen).
+  // 503/429가 나면 이 순서대로 아래로 내려가며 다시 시도한다.
+  // gemini-4-hydrogen은 3.1-flash-lite 다음의 마지막 백업이다(무료 티어 열려 있고 사고량은 LOW로 낮춰 쓴다).
   var MODELS = {
-    gemini: ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'],
+    gemini: ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-4-hydrogen'],
     groq: ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'qwen/qwen3.8-27b'],
     openai: ['gpt-4o-mini', 'gpt-4.1-mini', 'gpt-4o'],
     openrouter: ['google/gemini-2.0-flash-001', 'meta-llama/llama-3.3-70b-instruct:free', 'deepseek/deepseek-chat-v3-0324:free', 'anthropic/claude-3.5-haiku'],
@@ -10441,7 +10443,7 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
   var MODE_INFO = {
     gemini: {
       label: 'Google Gemini',
-      guide: 'Google AI Studio(<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>)에서 무료 키를 만들 수 있습니다. 기본 모델 <b>gemini-3.8-flash</b>는 무료 티어로도 쓸 수 있습니다. 구글이 밀리면 <b>gemini-3.6-flash → gemini-3.5-flash-lite → gemini-3.1-flash-lite</b> 순서로 알아서 내려갑니다.'
+      guide: 'Google AI Studio(<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>)에서 무료 키를 만들 수 있습니다. 기본 모델 <b>gemini-3.8-flash</b>는 무료 티어로도 쓸 수 있습니다. 구글이 밀리면 <b>gemini-3.6-flash → gemini-3.5-flash-lite → gemini-3.1-flash-lite → gemini-4-hydrogen</b> 순서로 알아서 내려갑니다.'
     },
     groq: {
       label: 'Groq',
@@ -11212,14 +11214,19 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
   async function geminiRequest(cfg, model, systemPrompt, contents, signal) {
     var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) +
       ':streamGenerateContent?alt=sse&key=' + encodeURIComponent(cfg.key);
-    // Gemini 3.x는 사고량을 thinking_level(low/medium/high)로만 조절한다.
+    // Gemini 3.x·4는 사고량을 thinking_level(low/medium/high[, xhigh])로만 조절한다.
     // thinking_budget은 폐기되어 400이 날 수 있으므로 쓰지 않는다.
+    // gemini-4-hydrogen은 thinkingLevel LOW를 지원한다(공식 문서: LOW·MEDIUM·HIGH(기본)·XHIGH).
+    // 다만 사고 토큰까지 maxOutputTokens에 포함되므로 8,192는 낮다. 공식 마이그레이션 안내도
+    // "8,192 같은 낮은 상한을 없애거나 65,536으로 올려라"라고 하니 hydrogen만 65,536으로 잡는다.
+    // temperature 0.95는 범위 안이라 hydrogen이 서버에서 무시할 뿐 400이 나지 않는다.
+    var outputCap = /^gemini-4/.test(model) ? 65536 : 8192;
     var fast = {
-      temperature: 0.95, maxOutputTokens: 8192,
+      temperature: 0.95, maxOutputTokens: outputCap,
       thinkingConfig: { thinkingLevel: 'LOW' }
     };
-    var plain = { temperature: 0.95, maxOutputTokens: 8192 };
-    var attempts = /^gemini-3/.test(model) ? [fast, plain] : [plain];
+    var plain = { temperature: 0.95, maxOutputTokens: outputCap };
+    var attempts = /^gemini-[34]/.test(model) ? [fast, plain] : [plain];
     var body = { systemInstruction: { parts: [{ text: systemPrompt }] }, contents: contents };
     var res = null;
     for (var i = 0; i < attempts.length; i++) {
@@ -11251,7 +11258,7 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
       res = await geminiRequest(cfg, primary, systemPrompt, contents, signal);
 
       // 2) 그래도 429(한도)·503(오버부하)이면 목록의 아래 모델로 차례로 내려간다.
-      //    3.8 → 3.6 → 3.5-flash-lite → 3.1-flash-lite. 이미 고른 모델보다 아래 것만 시도한다.
+      //    3.8 → 3.6 → 3.5-flash-lite → 3.1-flash-lite → gemini-4-hydrogen. 이미 고른 모델보다 아래 것만 시도한다.
       for (var i = 1; i < chain.length && !res.ok && isBusyStatus(res.status); i++) {
         if (onStatus) onStatus(i === 1 ? '아직 붐비나 봐. 다른 모델로 넘어가서 받아올게…' : '한 단계 더 내려가서 받아올게…');
         await sleep(FALLBACK_WAIT_MS);

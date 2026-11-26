@@ -592,6 +592,9 @@ select { -webkit-appearance: none; appearance: none; background-image: linear-gr
 }
 .seg button.on { background: linear-gradient(180deg, rgba(77, 140, 255, .9), rgba(43, 91, 181, .9)); color: #fff; font-weight: 600; }
 .seg.gold button.on { background: linear-gradient(180deg, rgba(217, 184, 114, .95), rgba(170, 138, 74, .95)); color: #1a1205; }
+/* AI 연결 모드가 5개라 한 줄에 안 들어간다. 두 줄짜리 격자로 놓고 좁은 화면에선 2열로. */
+#setModeSeg { display: grid; grid-template-columns: repeat(3, 1fr); }
+@media (max-width: 359px) { #setModeSeg { grid-template-columns: repeat(2, 1fr); } }
 .check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); padding: 6px 0; }
 .check input { width: 17px; height: 17px; accent-color: #4d8cff; }
 
@@ -954,6 +957,7 @@ select { -webkit-appearance: none; appearance: none; background-image: linear-gr
         <p class="desc">키는 이 기기 브라우저(localStorage)에만 저장되고 서버로 보내지 않습니다.</p>
         <div class="seg" id="setModeSeg" style="margin-bottom:10px">
           <button data-v="gemini" class="on">Gemini</button>
+          <button data-v="groq">Groq (무료)</button>
           <button data-v="openai">OpenAI</button>
           <button data-v="openrouter">OpenRouter</button>
           <button data-v="custom">직접입력</button>
@@ -10370,8 +10374,10 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
     return !!text && LEGACY_PERSONA_FINGERPRINTS.indexOf(personaFingerprint(text)) >= 0;
   }
 
+  // gemini: 앞에서부터 무거운 모델 → 가벼운 모델. 503/429가 나면 이 순서대로 아래로 내려가며 다시 시도한다.
   var MODELS = {
-    gemini: ['gemini-3.8-flash', 'gemini-3.6-flash'],
+    gemini: ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'],
+    groq: ['openai/gpt-oss-120b', 'qwen/qwen3.8-27b', 'llama-3.3-70b-versatile'],
     openai: ['gpt-4o-mini', 'gpt-4.1-mini', 'gpt-4o'],
     openrouter: ['google/gemini-2.0-flash-001', 'meta-llama/llama-3.3-70b-instruct:free', 'deepseek/deepseek-chat-v3-0324:free', 'anthropic/claude-3.5-haiku'],
     custom: []
@@ -10379,7 +10385,11 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
   var MODE_INFO = {
     gemini: {
       label: 'Google Gemini',
-      guide: 'Google AI Studio(<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>)에서 무료 키를 만들 수 있습니다. 기본 모델 <b>gemini-3.8-flash</b>는 무료 티어로도 쓸 수 있습니다.'
+      guide: 'Google AI Studio(<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>)에서 무료 키를 만들 수 있습니다. 기본 모델 <b>gemini-3.8-flash</b>는 무료 티어로도 쓸 수 있습니다. 구글이 밀리면 <b>gemini-3.6-flash → gemini-3.5-flash-lite → gemini-3.1-flash-lite</b> 순서로 알아서 내려갑니다.'
+    },
+    groq: {
+      label: 'Groq',
+      guide: 'Groq(<a href="https://console.groq.com/keys" target="_blank" rel="noopener">console.groq.com/keys</a>)에서 무료 키를 만들 수 있습니다. 기본 모델 <b>openai/gpt-oss-120b</b>는 무료 한도로 쓸 수 있습니다. 구글 서버가 통째로 밀릴 때 백업으로 쓰기 좋습니다.'
     },
     openai: {
       label: 'OpenAI',
@@ -10417,8 +10427,8 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
   function defaultSettings() {
     return {
       mode: 'gemini',
-      keys: { gemini: '', openai: '', openrouter: '', custom: '' },
-      models: { gemini: 'gemini-3.8-flash', openai: 'gpt-4o-mini', openrouter: 'google/gemini-2.0-flash-001', custom: '' },
+      keys: { gemini: '', groq: '', openai: '', openrouter: '', custom: '' },
+      models: { gemini: 'gemini-3.8-flash', groq: 'openai/gpt-oss-120b', openai: 'gpt-4o-mini', openrouter: 'google/gemini-2.0-flash-001', custom: '' },
       baseUrl: '',
       persona: DEFAULT_PERSONA,
       examples: '',
@@ -11080,13 +11090,18 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
     return callOpenAICompatible(cfg, systemPrompt, history, onDelta, signal);
   }
 
-  /* 구글이 잠깐 붐빌 때(429·5xx) 스스로 한 번 더 시도하고, 그래도 429·503이면 더 가벼운 모델로 넘어간다.
+  /* 구글이 잠깐 붐빌 때(429·5xx) 스스로 한 번 더 시도하고, 그래도 429·503이면 목록의 아래 모델로 차례로 내려간다.
    * 재시도는 첫 응답(연결) 단계에서만 한다. 본문이 흐르기 시작한 뒤에는 이미 화면에 답이 찍혔으므로 건드리지 않는다. */
-  var GEMINI_FALLBACK_MODEL = 'gemini-3.6-flash';
-  var RETRY_WAIT_MS = 1200;
-  var FALLBACK_WAIT_MS = 700;
+  var RETRY_WAIT_MS = 800;
+  var FALLBACK_WAIT_MS = 400;
   function isTransientStatus(status) {
     return status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+  }
+  function isBusyStatus(status) { return status === 429 || status === 503; }
+  // 지금 고른 모델부터 목록 끝까지의 폴백 순서. 목록에 없는 모델(직접 쓴 이름)이면 그 모델 하나만 쓴다.
+  function geminiChain(primary) {
+    var i = MODELS.gemini.indexOf(primary);
+    return i < 0 ? [primary] : MODELS.gemini.slice(i);
   }
   function abortError() {
     var e = new Error('전송을 멈췄다.');
@@ -11126,22 +11141,23 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
       return { role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] };
     });
     var primary = cfg.model || MODELS.gemini[0];
+    var chain = geminiChain(primary);
     var res = await geminiRequest(cfg, primary, systemPrompt, contents, signal);
 
     if (!res.ok && isTransientStatus(res.status)) {
-      // 1) 약 1.2초 쉬었다가 같은 모델로 한 번 더.
+      // 1) 약 0.8초 쉬었다가 같은 모델로 한 번 더.
       if (onStatus) onStatus('지금 좀 밀리네. 조금 있다가 한 번 더 물어볼게…');
       await sleep(RETRY_WAIT_MS);
       if (signal && signal.aborted) throw abortError();
       res = await geminiRequest(cfg, primary, systemPrompt, contents, signal);
 
-      // 2) 그래도 한도 초과(429)이거나 오버부하(503)이고 기본 모델이면 더 가벼운 모델로 한 번.
-      //    이미 가벼운 모델(3.6)이면 더 내려갈 곳이 없으니 그대로 오류를 낸다.
-      if (!res.ok && (res.status === 429 || res.status === 503) && primary === MODELS.gemini[0]) {
-        if (onStatus) onStatus('아직 붐비나 봐. 다른 모델로 넘어가서 받아올게…');
+      // 2) 그래도 429(한도)·503(오버부하)이면 목록의 아래 모델로 차례로 내려간다.
+      //    3.8 → 3.6 → 3.5-flash-lite → 3.1-flash-lite. 이미 고른 모델보다 아래 것만 시도한다.
+      for (var i = 1; i < chain.length && !res.ok && isBusyStatus(res.status); i++) {
+        if (onStatus) onStatus(i === 1 ? '아직 붐비나 봐. 다른 모델로 넘어가서 받아올게…' : '한 단계 더 내려가서 받아올게…');
         await sleep(FALLBACK_WAIT_MS);
         if (signal && signal.aborted) throw abortError();
-        res = await geminiRequest(cfg, GEMINI_FALLBACK_MODEL, systemPrompt, contents, signal);
+        res = await geminiRequest(cfg, chain[i], systemPrompt, contents, signal);
       }
     }
 
@@ -11160,6 +11176,7 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
     var base;
     if (cfg.mode === 'openai') base = 'https://api.openai.com/v1';
     else if (cfg.mode === 'openrouter') base = 'https://openrouter.ai/api/v1';
+    else if (cfg.mode === 'groq') base = 'https://api.groq.com/openai/v1';
     else {
       base = cfg.baseUrl || '';
       base = base.replace(/\/+$/, '');

@@ -10278,7 +10278,7 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
   ].join('\n');
 
   var MODELS = {
-    gemini: ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'],
+    gemini: ['gemini-3.8-flash', 'gemini-3.6-flash'],
     openai: ['gpt-4o-mini', 'gpt-4.1-mini', 'gpt-4o'],
     openrouter: ['google/gemini-2.0-flash-001', 'meta-llama/llama-3.3-70b-instruct:free', 'deepseek/deepseek-chat-v3-0324:free', 'anthropic/claude-3.5-haiku'],
     custom: []
@@ -10286,7 +10286,7 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
   var MODE_INFO = {
     gemini: {
       label: 'Google Gemini',
-      guide: 'Google AI Studio(<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>)에서 무료 키를 만들 수 있습니다. <b>gemini-2.5-flash</b> 또는 <b>gemini-2.0-flash</b>는 무료 티어로도 쓸 수 있습니다.'
+      guide: 'Google AI Studio(<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>)에서 무료 키를 만들 수 있습니다. 기본 모델 <b>gemini-3.8-flash</b>는 무료 티어로도 쓸 수 있습니다.'
     },
     openai: {
       label: 'OpenAI',
@@ -10324,7 +10324,7 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
     return {
       mode: 'gemini',
       keys: { gemini: '', openai: '', openrouter: '', custom: '' },
-      models: { gemini: 'gemini-2.5-flash', openai: 'gpt-4o-mini', openrouter: 'google/gemini-2.0-flash-001', custom: '' },
+      models: { gemini: 'gemini-3.8-flash', openai: 'gpt-4o-mini', openrouter: 'google/gemini-2.0-flash-001', custom: '' },
       baseUrl: '',
       persona: DEFAULT_PERSONA,
       examples: '',
@@ -10336,16 +10336,30 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
 
   function load() {
     try { state.profiles = JSON.parse(localStorage.getItem(STORE.profiles) || '[]') || []; } catch (e) { state.profiles = []; }
+    var raw = null;
     try {
-      var s = JSON.parse(localStorage.getItem(STORE.settings) || 'null');
-      state.settings = mergeSettings(defaultSettings(), s || {});
-    } catch (e) { state.settings = defaultSettings(); }
+      raw = JSON.parse(localStorage.getItem(STORE.settings) || 'null');
+      state.settings = mergeSettings(defaultSettings(), raw || {});
+    } catch (e) { raw = null; state.settings = defaultSettings(); }
+    // 저장된 모델이 단종된 Gemini 2.x(gemini-2.5-flash 등)면 3.8로 올려서 바로 저장한다.
+    // 그래야 설정을 다시 건드리지 않아도 다음 요청부터 통과한다.
+    var storedModels = (raw && raw.models) || {};
+    var migrated = Object.keys(state.settings.models).some(function (k) {
+      return storedModels[k] !== undefined && String(storedModels[k]) !== String(state.settings.models[k]);
+    });
+    if (migrated) { try { saveSettings(); } catch (e) { } }
     try { state.chats = JSON.parse(localStorage.getItem(STORE.chats) || '{}') || {}; } catch (e) { state.chats = {}; }
     try { state.ui = Object.assign(state.ui, JSON.parse(localStorage.getItem(STORE.ui) || '{}') || {}); } catch (e) { }
     if (!state.ui.activeProfileId || !getProfile(state.ui.activeProfileId)) {
       var self = state.profiles.filter(function (p) { return p.rel === 'self'; })[0];
       state.ui.activeProfileId = self ? self.id : (state.profiles[0] ? state.profiles[0].id : null);
     }
+  }
+  // 단종된 Gemini 2.x 모델명과 'models/' 접두사를 현재 모델로 정리한다.
+  function normalizeModel(mode, model) {
+    var m = String(model == null ? '' : model).trim().replace(/^models\//, '');
+    if (mode === 'gemini' && /^gemini-2(\.|$)/.test(m)) m = MODELS.gemini[0];
+    return m;
   }
   function mergeSettings(base, s) {
     var out = Object.assign({}, base);
@@ -10354,6 +10368,7 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
     });
     out.keys = Object.assign({}, base.keys, s.keys || {});
     out.models = Object.assign({}, base.models, s.models || {});
+    Object.keys(out.models).forEach(function (k) { out.models[k] = normalizeModel(k, out.models[k]); });
     if (!out.persona || !out.persona.trim()) out.persona = DEFAULT_PERSONA;
     return out;
   }
@@ -10900,20 +10915,36 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
     var contents = history.map(function (m) {
       return { role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] };
     });
-    var gen = { temperature: 0.95, maxOutputTokens: 2600 };
-    if (/2\.5/.test(cfg.model) && /flash/.test(cfg.model)) gen.thinkingConfig = { thinkingBudget: 0 };
-    var body = { systemInstruction: { parts: [{ text: systemPrompt }] }, contents: contents, generationConfig: gen };
-    var res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: signal
-    });
+    // Gemini 3.x는 사고량을 thinking_level(low/medium/high)로만 조절한다.
+    // thinking_budget은 폐기되어 400이 날 수 있으므로 쓰지 않는다.
+    var fast = {
+      temperature: 0.95, maxOutputTokens: 8192,
+      thinkingConfig: { thinkingLevel: 'LOW' }
+    };
+    var plain = { temperature: 0.95, maxOutputTokens: 8192 };
+    var attempts = /^gemini-3/.test(cfg.model) ? [fast, plain] : [plain];
+    var res = null;
+    for (var i = 0; i < attempts.length; i++) {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          contents: contents,
+          generationConfig: attempts[i]
+        }),
+        signal: signal
+      });
+      // thinking_level을 받지 않는 모델·버전이면 400이 오므로 기본 설정으로 한 번 더 시도한다.
+      if (res.ok || res.status !== 400 || i === attempts.length - 1) break;
+    }
     if (!res.ok) throw await httpError(res);
     await readSSE(res, function (obj) {
       var cand = (obj.candidates || [])[0];
       if (!cand || !cand.content || !cand.content.parts) return '';
-      return cand.content.parts.map(function (p) { return p.text || ''; }).join('');
+      // 사고 과정(thought) 파트는 화면에 섞지 않고 본문만 흡린다.
+      return cand.content.parts.filter(function (p) { return p && !p.thought; })
+        .map(function (p) { return p.text || ''; }).join('');
     }, onDelta);
   }
 
@@ -11325,6 +11356,7 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
     $('setModeSeg').querySelectorAll('button').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-v') === mode); });
     $('keyGuide').innerHTML = MODE_INFO[mode].guide;
     $('setKey').placeholder = mode === 'custom' ? '필요 없으면 비워도 됩니다' : 'API 키 붙여넣기';
+    $('setModel').placeholder = (MODELS[mode] || [])[0] || '모델명 입력';
   }
   function refreshModelList() {
     var m = state.settings.mode;

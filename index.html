@@ -10855,8 +10855,7 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
     bindMatchChips();
     $('matchAdd2').addEventListener('click', function () { openProfileSheet(null, 'partner'); });
     $('matchChat').addEventListener('click', function () {
-      switchTab('chat');
-      sendMessage(partner.name + '와의 궁합 봐줘.', { partnerId: partner.id });
+      enterMatchChat(partner.id);
     });
     $('matchFull').addEventListener('click', function () {
       state.ui.activeProfileId = partner.id; saveUi(); switchTab('chart'); renderAll();
@@ -11045,6 +11044,18 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
     if (tab === 'chart') renderChart();
     if (tab === 'chat') renderChat();
     if (tab === 'match') renderMatch();
+  }
+
+  // 궁합 상담으로 넘어가기: 상대만 정해 두고 채팅방을 열어 준다.
+  // 질문은 직접 입력할 때만 나가야 하므로 자동 메시지는 보내지 않는다.
+  function enterMatchChat(partnerId) {
+    var exists = state.profiles.some(function (p) { return p.id === partnerId; });
+    if (!exists) return;
+    state.chatPartnerId = partnerId;
+    switchTab('chat');
+    renderChat();
+    var input = $('input');
+    if (input) input.focus();
   }
 
   function renderAll() {
@@ -11903,10 +11914,8 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
     mask.querySelectorAll('[data-pick]').forEach(function (b) {
       b.addEventListener('click', function () {
         var id = b.getAttribute('data-pick');
-        var p = getProfile(id);
         close();
-        switchTab('chat');
-        sendMessage(p.name + '와의 궁합 봐줘.', { partnerId: id });
+        enterMatchChat(id);
       });
     });
   }

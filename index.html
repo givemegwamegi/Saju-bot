@@ -11300,11 +11300,16 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
       var hist = historyLimit < history.length ? history.slice(-historyLimit) : history.slice();
       // 잘라 낸 앞자리가 assistant면 user가 나올 때까지 버린다. OpenAI 호환 API는 첫 메시지가 user여야 한다.
       while (hist.length && hist[0].role !== 'user') hist = hist.slice(1);
-      return {
+      var body = {
         model: model,
         messages: [{ role: 'system', content: systemPrompt }].concat(hist),
         stream: true, temperature: temperature, max_tokens: maxTokens
       };
+      // gpt-oss는 추론 모델이라 max_tokens 안에서 숨은 reasoning 토큰과 본문(content) 토큰을 함께 쓴다.
+      // reasoning_effort를 비우면 기본 medium이라 추론에만 1,000~1,500토큰을 써 버리고 본문이 중간에 잘린다.
+      // Groq의 gpt-oss-120b·gpt-oss-20b만 low로 낮춰 추론 몫을 줄인다. qwen 등 다른 모델, 다른 모드에는 넣지 않는다.
+      if (cfg.mode === 'groq' && /gpt-oss/.test(model)) body.reasoning_effort = 'low';
+      return body;
     }
     function send(model) {
       return fetch(url, {
@@ -11375,6 +11380,20 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
     var reader = res.body.getReader();
     var decoder = new TextDecoder('utf-8');
     var buf = '';
+    // 한 줄을 처리한다. [DONE]을 만나면 false를 돌려 읽기를 끝낸다.
+    function consume(raw) {
+      var line = raw.trim();
+      if (!line || line.charAt(0) === ':') return true;
+      if (line.indexOf('data:') !== 0) return true;
+      var payload = line.slice(5).trim();
+      if (payload === '[DONE]') return false;
+      try {
+        var obj = JSON.parse(payload);
+        var txt = extract(obj);
+        if (txt) onDelta(txt);
+      } catch (e) { /* partial line */ }
+      return true;
+    }
     while (true) {
       var step = await reader.read();
       if (step.done) break;
@@ -11382,17 +11401,16 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = SajuEngi
       var lines = buf.split('\n');
       buf = lines.pop();
       for (var i = 0; i < lines.length; i++) {
-        var line = lines[i].trim();
-        if (!line || line.charAt(0) === ':') continue;
-        if (line.indexOf('data:') !== 0) continue;
-        var payload = line.slice(5).trim();
-        if (payload === '[DONE]') return;
-        try {
-          var obj = JSON.parse(payload);
-          var txt = extract(obj);
-          if (txt) onDelta(txt);
-        } catch (e) { /* partial line */ }
+        if (!consume(lines[i])) return;
       }
+    }
+    // 스트림이 끝났다. decoder에 남은 멀티바이트 문자를 풀어 내고,
+    // 마지막 줄 뒤에 개행이 없어 buf에 남아 있던 data: 청크도 버리지 않고 마저 처리한다.
+    // (이 처리가 없으면 개행 없이 끝난 마지막 청크가 통째로 사라져 답변이 중간에 끊긴다.)
+    buf += decoder.decode();
+    var rest = buf.split('\n');
+    for (var k = 0; k < rest.length; k++) {
+      if (!consume(rest[k])) return;
     }
   }
 
